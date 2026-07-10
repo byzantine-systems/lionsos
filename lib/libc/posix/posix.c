@@ -228,3 +228,14 @@ void libc_init(libc_socket_config_t *socket_config, void *heap, size_t heap_size
     __init_libc(envp, NULL);
     __libc_start_init();
 }
+
+/* Chrysopolis (issue 0.3.0-rng): replace an already-claimed syscall
+ * slot and return the previous handler, so a client can layer a new
+ * handler over libc's and chain to it. libc_define_syscall asserts
+ * the slot is NULL and so cannot do this. Upstream candidate. */
+muslcsys_syscall_t libc_redefine_syscall(int syscall_num, muslcsys_syscall_t syscall_func) {
+    assert(syscall_num >= 0 && syscall_num < ARRAY_SIZE(syscall_table));
+    muslcsys_syscall_t old = syscall_table[syscall_num];
+    syscall_table[syscall_num] = syscall_func;
+    return old;
+}

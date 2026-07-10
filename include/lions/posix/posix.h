@@ -43,3 +43,7 @@ typedef struct {
 void libc_init(libc_socket_config_t *socket_config, void *heap, size_t heap_size);
 void libc_define_syscall(int syscall_num, muslcsys_syscall_t syscall_func);
 int socket_index_of_fd(int fd);
+
+/* Chrysopolis (issue 0.3.0-rng): see posix.c. Replaces a claimed
+ * syscall slot, returning the old handler for chaining. */
+muslcsys_syscall_t libc_redefine_syscall(int syscall_num, muslcsys_syscall_t syscall_func);
