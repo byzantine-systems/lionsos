@@ -90,7 +90,9 @@ static int resolve_path(int dirfd, const char *path, char *out_path, size_t out_
 
 static size_t fs_status_to_errno[FS_STATUS_NUM_STATUSES] = {
     [FS_STATUS_SUCCESS] = FILE_SUCC,
-    [FS_STATUS_ERROR] = FILE_ERR,
+    // START_CHRYSOPOLIS_MODIFICATION: a FatFs disk error is an I/O error, not EPERM
+    [FS_STATUS_ERROR] = EIO,
+    // END_CHRYSOPOLIS_MODIFICATION
     [FS_STATUS_INVALID_BUFFER] = EINVAL,
     [FS_STATUS_INVALID_PATH] = ENOENT,
     [FS_STATUS_INVALID_FD] = EBADF,
