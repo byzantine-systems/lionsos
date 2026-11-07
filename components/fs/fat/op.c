@@ -452,7 +452,23 @@ void handle_rename(void) {
 
     FRESULT RET = f_rename(oldpath, newpath);
 
-    args->status = (RET == FR_OK) ? FS_STATUS_SUCCESS : FS_STATUS_ERROR;
+    // START_CHRYSOPOLIS_MODIFICATION: name the outcomes a caller acts on, as handle_dir_create does
+    switch (RET) {
+    case FR_OK:
+        args->status = FS_STATUS_SUCCESS;
+        break;
+    case FR_EXIST:
+        args->status = FS_STATUS_ALREADY_EXISTS;
+        break;
+    case FR_NO_FILE:
+    case FR_NO_PATH:
+        args->status = FS_STATUS_NO_FILE;
+        break;
+    default:
+        args->status = FS_STATUS_ERROR;
+        break;
+    }
+    // END_CHRYSOPOLIS_MODIFICATION
 }
 
 void handle_file_remove(void) {
