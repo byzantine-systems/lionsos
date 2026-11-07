@@ -730,6 +730,79 @@ static long sys_fsync(va_list ap) {
 }
 // END_CHRYSOPOLIS_MODIFICATION
 
+// START_CHRYSOPOLIS_MODIFICATION: rename(3) reaches the server's FS_CMD_RENAME. FatFs refuses
+// a target that exists, so renaming onto one fails with EEXIST where POSIX replaces it.
+static long rename_paths(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
+    char old_full[PATH_MAX] = { 0 };
+    char new_full[PATH_MAX] = { 0 };
+    int err = resolve_path(olddirfd, oldpath, old_full, PATH_MAX);
+    if (err == FILE_SUCC) {
+        err = resolve_path(newdirfd, newpath, new_full, PATH_MAX);
+    }
+    if (err != FILE_SUCC) {
+        return -err;
+    }
+
+    size_t old_len = strlen(old_full);
+    size_t new_len = strlen(new_full);
+    if (old_len >= FS_BUFFER_SIZE || new_len >= FS_BUFFER_SIZE) {
+        return -ENAMETOOLONG;
+    }
+
+    ptrdiff_t old_buffer = 0;
+    ptrdiff_t new_buffer = 0;
+    fs_cmpl_t completion = { 0 };
+    if (fs_buffer_allocate(&old_buffer)) {
+        return -ENOMEM;
+    }
+    long rc = -ENOMEM;
+    if (fs_buffer_allocate(&new_buffer)) {
+        goto free_old;
+    }
+    memcpy(fs_buffer_ptr(old_buffer), old_full, old_len);
+    memcpy(fs_buffer_ptr(new_buffer), new_full, new_len);
+
+    err = fs_command_blocking(&completion, (fs_cmd_t) {
+                                               .type = FS_CMD_RENAME,
+                                               .params.rename = {
+                                                   .old_path = { .offset = old_buffer, .size = old_len },
+                                                   .new_path = { .offset = new_buffer, .size = new_len },
+                                               },
+                                           });
+    // No free request slot leaves the completion unwritten.
+    if (err || completion.status >= FS_STATUS_NUM_STATUSES) {
+        rc = -EIO;
+    } else {
+        rc = -(long)fs_status_to_errno[completion.status];
+    }
+    fs_buffer_free(new_buffer);
+free_old:
+    fs_buffer_free(old_buffer);
+    return rc;
+}
+
+static long sys_renameat(va_list ap) {
+    int olddirfd = va_arg(ap, int);
+    const char *oldpath = va_arg(ap, const char *);
+    int newdirfd = va_arg(ap, int);
+    const char *newpath = va_arg(ap, const char *);
+    return rename_paths(olddirfd, oldpath, newdirfd, newpath);
+}
+
+// Only plain renames: RENAME_NOREPLACE is what FatFs does anyway, but EXCHANGE and WHITEOUT are not.
+static long sys_renameat2(va_list ap) {
+    int olddirfd = va_arg(ap, int);
+    const char *oldpath = va_arg(ap, const char *);
+    int newdirfd = va_arg(ap, int);
+    const char *newpath = va_arg(ap, const char *);
+    unsigned int flags = va_arg(ap, unsigned int);
+    if (flags != 0) {
+        return -EINVAL;
+    }
+    return rename_paths(olddirfd, oldpath, newdirfd, newpath);
+}
+// END_CHRYSOPOLIS_MODIFICATION
+
 void libc_init_file() {
     libc_define_syscall(__NR_newfstatat, sys_fstatat);
     libc_define_syscall(__NR_readlinkat, sys_readlinkat);
@@ -740,6 +813,8 @@ void libc_init_file() {
     // START_CHRYSOPOLIS_MODIFICATION
     libc_define_syscall(__NR_fsync, sys_fsync);
     libc_define_syscall(__NR_fdatasync, sys_fsync);
+    libc_define_syscall(__NR_renameat, sys_renameat);
+    libc_define_syscall(__NR_renameat2, sys_renameat2);
     // END_CHRYSOPOLIS_MODIFICATION
 
     memset(fs_server_fd_map, -1, sizeof(fs_server_fd_map));
