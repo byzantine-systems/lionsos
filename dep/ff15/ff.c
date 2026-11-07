@@ -5071,6 +5071,10 @@ FRESULT f_unlink (
 			}
 			if (res == FR_OK) {
 				res = dir_remove(&dj);			/* Remove the directory entry */
+				/* START_CHRYSOPOLIS_MODIFICATION: the entry before its chain, so a
+				 * crash leaks clusters instead of leaving an entry on free ones */
+				if (res == FR_OK && dclst != 0) res = barrier(fs);
+				/* END_CHRYSOPOLIS_MODIFICATION */
 				if (res == FR_OK && dclst != 0) {	/* Remove the cluster chain if exist */
 #if FF_FS_EXFAT
 					res = remove_chain(&obj, dclst, 0);
@@ -5137,7 +5141,11 @@ FRESULT f_mkdir (
 						st_clust(fs, fs->win + SZDIRE, pcl);
 						fs->wflag = 1;
 					}
-					res = dir_register(&dj);	/* Register the object to the parent directoy */
+					/* START_CHRYSOPOLIS_MODIFICATION: the new table and its cluster before
+					 * the entry naming them, so a crash leaks a cluster at worst */
+					res = barrier(fs);
+					if (res == FR_OK) res = dir_register(&dj);	/* Register the object to the parent directoy */
+					/* END_CHRYSOPOLIS_MODIFICATION */
 				}
 			}
 			if (res == FR_OK) {
@@ -5263,7 +5271,12 @@ FRESULT f_rename (
 				}
 			}
 			if (res == FR_OK) {
-				res = dir_remove(&djo);		/* Remove old entry */
+				/* START_CHRYSOPOLIS_MODIFICATION: the new entry before the old one goes,
+				 * so a crash leaves the file under one name or both (the cross-link
+				 * above), never under neither */
+				res = barrier(fs);
+				if (res == FR_OK) res = dir_remove(&djo);		/* Remove old entry */
+				/* END_CHRYSOPOLIS_MODIFICATION */
 				if (res == FR_OK) {
 					res = sync_fs(fs);
 				}
