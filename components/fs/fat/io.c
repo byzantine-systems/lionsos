@@ -33,6 +33,19 @@ uint64_t thread_blk_addr[FAT_WORKER_THREAD_NUM];
 
 #define IS_POWER_OF_2(x) ((x) && !((x) & ((x) - 1)))
 
+/* START_CHRYSOPOLIS_MODIFICATION: FatFs's sector size. A build may set it to
+ * BLK_TRANSFER_SIZE, so FatFs never writes part of a transfer block, which this
+ * file would otherwise read first. Defaults to the device's sector. */
+static uint16_t fat_sector_size(void)
+{
+#ifdef FAT_SECTOR_SIZE
+    return FAT_SECTOR_SIZE;
+#else
+    return blk_storage_info->sector_size;
+#endif
+}
+/* END_CHRYSOPOLIS_MODIFICATION */
+
 void wait_for_blk_resp(void) {
     extern microkit_cothread_sem_t sem[FAT_WORKER_THREAD_NUM + 1];
     microkit_cothread_ref_t handle = microkit_cothread_my_handle();
@@ -58,6 +71,16 @@ DSTATUS disk_initialize (
     assert(blk_storage_info->sector_size % 512 == 0 && "Sector size must be a multiple of 512");
     assert(blk_storage_info->sector_size <= BLK_TRANSFER_SIZE && "BLK_TRANSFER_SIZE must be the same or larger than sector size");
     assert(IS_POWER_OF_2(BLK_TRANSFER_SIZE / blk_storage_info->sector_size) && "BLK_TRANSFER_SIZE / SECTOR_SIZE must be a power of 2");
+
+    /* START_CHRYSOPOLIS_MODIFICATION: checked, not asserted, so a bad build
+     * refuses to mount rather than corrupting the volume. */
+    uint16_t fat_ss = fat_sector_size();
+    if (fat_ss % blk_storage_info->sector_size != 0 || fat_ss > BLK_TRANSFER_SIZE
+        || !IS_POWER_OF_2(BLK_TRANSFER_SIZE / fat_ss) || max_cluster_size < BLK_TRANSFER_SIZE) {
+        LOG_FATFS("FatFs sector size %u does not fit device sector %u\n", fat_ss, blk_storage_info->sector_size);
+        return STA_NOINIT;
+    }
+    /* END_CHRYSOPOLIS_MODIFICATION */
 
     LOG_FATFS("Block Storage Information:\n");
     LOG_FATFS("--------------------------\n");
@@ -87,10 +110,12 @@ DSTATUS disk_status (
 }
 
 DRESULT disk_ioctl (BYTE pdrv, BYTE cmd, void* buff) {
-    DRESULT res;
+    /* START_CHRYSOPOLIS_MODIFICATION: an unhandled command was returned uninitialized */
+    DRESULT res = RES_PARERR;
+    /* END_CHRYSOPOLIS_MODIFICATION */
     if (cmd == GET_SECTOR_SIZE) {
         WORD *size = buff;
-        *size = blk_storage_info->sector_size;
+        *size = fat_sector_size();
         res = RES_OK;
     }
     if (cmd == CTRL_SYNC) {
@@ -115,7 +140,7 @@ DRESULT disk_read(BYTE pdrv, BYTE *buff, LBA_t sector, UINT count) {
     // Accroding the protocol, all the read/write addr passed to the blk_virt should be page aligned
     // Substract the handle with one as the worker thread ID starts at 1, not 0
     uint64_t read_data_offset = thread_blk_addr[handle - 1];
-    uint16_t sector_size = blk_storage_info->sector_size;
+    uint16_t sector_size = fat_sector_size();
     // This is the same as BLK_TRANSFER_SIZE / sector_size
     uint16_t sector_per_transfer = DIV_POWER_OF_2(BLK_TRANSFER_SIZE, sector_size);
     uint32_t sddf_sector = DIV_POWER_OF_2(sector, sector_per_transfer);
@@ -154,7 +179,7 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count) {
     int handle = microkit_cothread_my_handle();
     // Substract the handle with one as the worker thread ID starts at 1, not 0
     uint64_t write_data_offset = thread_blk_addr[handle - 1];
-    uint16_t sector_size = blk_storage_info->sector_size;
+    uint16_t sector_size = fat_sector_size();
     if (sector_size == BLK_TRANSFER_SIZE) {
         assert(MUL_POWER_OF_2(count, BLK_TRANSFER_SIZE) <= max_cluster_size);
 
