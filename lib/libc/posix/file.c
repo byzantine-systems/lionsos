@@ -112,7 +112,8 @@ static size_t fs_status_to_errno[FS_STATUS_NUM_STATUSES] = {
     [FS_STATUS_NOT_EMPTY] = ENOTEMPTY,
 };
 
-static ssize_t file_write(const void *buf, size_t len, int fd) {
+// START_CHRYSOPOLIS_MODIFICATION: write and read at a given offset, shared by pwrite and pread
+static ssize_t file_write_at(const void *buf, size_t len, int fd, off_t offset) {
     if (len == 0) {
         return 0;
     }
@@ -143,7 +144,7 @@ static ssize_t file_write(const void *buf, size_t len, int fd) {
         err = fs_command_blocking(&completion, (fs_cmd_t) { .type = FS_CMD_FILE_WRITE,
                                                             .params.file_write = {
                                                                 .fd = fs_server_fd_map[fd],
-                                                                .offset = fd_entry->file_ptr + written,
+                                                                .offset = offset + written,
                                                                 .buf.offset = write_buffer,
                                                                 .buf.size = to_write,
                                                             } });
@@ -167,12 +168,22 @@ static ssize_t file_write(const void *buf, size_t len, int fd) {
 
     fs_buffer_free(write_buffer);
 
-    fd_entry->file_ptr += written;
-
     return written;
 }
 
-static ssize_t file_read(void *buf, size_t len, int fd) {
+static ssize_t file_write(const void *buf, size_t len, int fd) {
+    fd_entry_t *fd_entry = posix_fd_entry(fd);
+    if (fd_entry == NULL) {
+        return -EBADF;
+    }
+    ssize_t written = file_write_at(buf, len, fd, fd_entry->file_ptr);
+    if (written > 0) {
+        fd_entry->file_ptr += written;
+    }
+    return written;
+}
+
+static ssize_t file_read_at(void *buf, size_t len, int fd, off_t offset) {
     if (len == 0) {
         return 0;
     }
@@ -202,7 +213,7 @@ static ssize_t file_read(void *buf, size_t len, int fd) {
         err = fs_command_blocking(&completion, (fs_cmd_t) { .type = FS_CMD_FILE_READ,
                                                             .params.file_read = {
                                                                 .fd = fs_server_fd_map[fd],
-                                                                .offset = fd_entry->file_ptr + total_read,
+                                                                .offset = offset + total_read,
                                                                 .buf.offset = read_buffer,
                                                                 .buf.size = to_read,
                                                             } });
@@ -228,10 +239,21 @@ static ssize_t file_read(void *buf, size_t len, int fd) {
 
     fs_buffer_free(read_buffer);
 
-    fd_entry->file_ptr += total_read;
-
     return total_read;
 }
+
+static ssize_t file_read(void *buf, size_t len, int fd) {
+    fd_entry_t *fd_entry = posix_fd_entry(fd);
+    if (fd_entry == NULL) {
+        return -EBADF;
+    }
+    ssize_t total_read = file_read_at(buf, len, fd, fd_entry->file_ptr);
+    if (total_read > 0) {
+        fd_entry->file_ptr += total_read;
+    }
+    return total_read;
+}
+// END_CHRYSOPOLIS_MODIFICATION
 
 static int file_close(int fd) {
     fs_cmpl_t completion;
@@ -730,6 +752,44 @@ static long sys_fsync(va_list ap) {
 }
 // END_CHRYSOPOLIS_MODIFICATION
 
+// START_CHRYSOPOLIS_MODIFICATION: pread and pwrite on a file-server descriptor, without moving
+// its offset. Any other descriptor (console, socket, pipe) cannot seek, so it is ESPIPE.
+static long positional(int fd, off_t offset) {
+    fd_entry_t *fd_entry = posix_fd_entry(fd);
+    if (fd_entry == NULL) {
+        return -EBADF;
+    }
+    if (fd < 0 || fd >= MAX_FDS || fs_server_fd_map[fd] < 0) {
+        return -ESPIPE;
+    }
+    if (fd_entry->flags & O_DIRECTORY) {
+        return -EISDIR;
+    }
+    if (offset < 0) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
+static long sys_pwrite64(va_list ap) {
+    int fd = va_arg(ap, int);
+    const void *buf = va_arg(ap, const void *);
+    size_t count = va_arg(ap, size_t);
+    off_t offset = va_arg(ap, off_t);
+    long err = positional(fd, offset);
+    return err ? err : file_write_at(buf, count, fd, offset);
+}
+
+static long sys_pread64(va_list ap) {
+    int fd = va_arg(ap, int);
+    void *buf = va_arg(ap, void *);
+    size_t count = va_arg(ap, size_t);
+    off_t offset = va_arg(ap, off_t);
+    long err = positional(fd, offset);
+    return err ? err : file_read_at(buf, count, fd, offset);
+}
+// END_CHRYSOPOLIS_MODIFICATION
+
 // START_CHRYSOPOLIS_MODIFICATION: rename(3) reaches the server's FS_CMD_RENAME. FatFs refuses
 // a target that exists, so renaming onto one fails with EEXIST where POSIX replaces it.
 static long rename_paths(int olddirfd, const char *oldpath, int newdirfd, const char *newpath) {
@@ -815,6 +875,8 @@ void libc_init_file() {
     libc_define_syscall(__NR_fdatasync, sys_fsync);
     libc_define_syscall(__NR_renameat, sys_renameat);
     libc_define_syscall(__NR_renameat2, sys_renameat2);
+    libc_define_syscall(__NR_pread64, sys_pread64);
+    libc_define_syscall(__NR_pwrite64, sys_pwrite64);
     // END_CHRYSOPOLIS_MODIFICATION
 
     memset(fs_server_fd_map, -1, sizeof(fs_server_fd_map));
